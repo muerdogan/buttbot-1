@@ -17,6 +17,7 @@ package BasicButtBot;
 use base qw/Bot::BasicBot/;
 
 # What would you like to Butt today?
+use lib '.';   # Line added to get it work with recent perl version (v5.26.1)
 use Butts;
 # config-parsing is a bit passe.
 use YAML::Any;
@@ -81,6 +82,31 @@ sub start_state {
     $kernel->state('irc_405', $self, 'handle_err_too_many_chans');
 
     return $ret;
+}
+
+sub irc_001_state {
+    my ( $self, $kernel ) = @_[ OBJECT, KERNEL ];
+
+    # ignore all messages from ourselves
+    $kernel->post( $self->{IRCNAME}, 'ignore', $self->charset_encode($self->nick) );
+
+    #Try to authenticate to nickserv and pause before joining channels
+    my $nickservpass = $self->{nickservpass};
+    if (defined($self->{nickservpass})) {
+        $self->log("Trying to authenticate to nickserv\n");
+        $self->say({who => 'NICKSERV', body => "identify $nickservpass", channel => 'msg'});
+        sleep 2;
+    }
+
+    # connect to the channel
+    foreach my $channel ( $self->channels ) {
+        $self->log("Trying to connect to '$channel'\n");
+        $kernel->post( $self->{IRCNAME}, 'join', $self->charset_encode($channel) );
+    }
+
+    $self->schedule_tick(5);
+
+    $self->connected();
 }
 
 sub handle_err_too_many_chans {
@@ -366,6 +392,17 @@ sub handle_pm_command {
     } elsif ($cmd eq 'deauth') {
         $self->auth_set($who, 0);
         $self->pm_reply($who, "Ok. See you again sometime");
+    } elsif ($cmd eq 'echo') {
+        my ($arg_chan, $arg_msg) = _parse_channel($args);
+        if (defined $arg_chan && $arg_msg ne '') {
+            if (!$self->in_channel($arg_chan)) {
+                $self->pm_reply($who, "I'm not in that channel!");
+            } else {
+                $self->say({body => $arg_msg, channel => $arg_chan});
+            }
+        } else {
+            $self->pm_reply($who, "I need a channel name and a message.");
+        }
     } elsif ($cmd eq 'channel-list') {
         my @channels = $self->get_all_channels;;
         $self->pm_reply($who, "I'm in: " . join(', ', @channels));
@@ -444,8 +481,6 @@ sub to_butt_or_not_to_butt {
     my $rnd_max = 0;
     my $frequencies = $self->config('frequency');
 
-    return 0 if $self->might_be_a_bot($sufferer);
-
     # Fixes issue 6.
     unless ($self->_is_string_buttable($message)) {
         $self->log("BUTT: String is not buttable");
@@ -484,11 +519,6 @@ sub _was_string_butted {
     $in =~ s/\s+//g;
     $out =~ s/\s+//g;
     return (lc($in) ne lc($out));
-}
-
-sub might_be_a_bot {
-    my ($self, $who) = @_;
-    return ($who =~ m/cout|(?:bot$)/i);
 }
 
 sub is_enemy {
